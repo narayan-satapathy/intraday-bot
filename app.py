@@ -1,92 +1,85 @@
+import time
 import streamlit as st
+import pandas as pd
 
 from config import DEFAULT_SYMBOLS
 from data.market_data import get_candles
-from analysis.technicals import add_technicals, latest_snapshot
-from analysis.ai_decision import ai_decide
+from analysis.technicals import add_technicals
 
-st.set_page_config(page_title="Intraday stock analysis", layout="wide")
+import os
+st.write("Working directory:", os.getcwd())
 
-st.title("📈 Intraday stock analysis using market data and AI")
-st.caption("Symbols: " + ", ".join(DEFAULT_SYMBOLS))
+st.set_page_config(
+    page_title="Intraday Bot",
+    layout="wide",
+)
 
+st.title("📈 Intraday Stock Analysis Bot")
 
-# --- Clean Summary Function ---
-def clean_summary(s):
-    price = s["price"]
+st.sidebar.header("Settings")
 
-    # Trend
-    trend = "Bullish" if s["ema_fast"] > s["ema_slow"] else "Bearish"
-    trend_icon = "📈" if trend == "Bullish" else "📉"
+interval = st.sidebar.selectbox(
+    "Select interval",
+    ["5min", "15min"],
+)
 
-    # Momentum
-    momentum = "Improving" if s["momentum"] == "up" else "Cooling"
-    momentum_icon = "🔥" if s["momentum"] == "up" else "🧊"
-
-    # Volume
-    volume = "High" if s["vol_spike"] else "Normal"
-    volume_icon = "📊" if s["vol_spike"] else "🔹"
-
-    # RSI interpretation
-    if s["rsi"] > 60:
-        rsi = "Strong"
-    elif s["rsi"] > 50:
-        rsi = "Improving"
-    elif s["rsi"] < 40:
-        rsi = "Weak"
-    else:
-        rsi = "Neutral"
-
-    return (
-        f"Price: ${price:.2f} | "
-        f"{trend_icon} {trend} | "
-        f"{momentum_icon} Momentum {momentum} | "
-        f"{volume_icon} Volume {volume} | "
-        f"RSI {rsi}"
-    )
+show_raw = st.sidebar.checkbox("Show raw candle data", value=True)
+show_technicals = st.sidebar.checkbox("Show technical indicators", value=True)
+show_ai = st.sidebar.checkbox("Show AI decision output", value=True)
 
 
-# --- UI Button ---
-refresh = st.button("Run Analysis")
+for symbol in DEFAULT_SYMBOLS:
+    st.markdown(f"## 🔹 {symbol}")
 
+    candles = get_candles(symbol, interval)
 
-# --- Main Logic ---
-if refresh:
-    for symbol in DEFAULT_SYMBOLS:
-        st.header(symbol)
+    # show row count so you see it's not 0
+    st.write(f"{symbol} candle rows: {len(candles)}")
 
-        # Fetch 5m + 15m data
-        snapshots = {}
-        for tf, interval in {"5m": "5min", "15m": "15min"}.items():
-            candles = get_candles(symbol, interval)
-            candles = add_technicals(candles)
-            snapshots[tf] = latest_snapshot(symbol, candles)
+    if candles is None or candles.empty:
+        st.warning(f"No candle data for {symbol} ({interval}). Skipping.")
+        st.markdown("---")
+        time.sleep(0.2)
+        continue
 
-        # AI Decision
-        decision = ai_decide(snapshots)
-        action = decision["action"]
-        confidence = decision["confidence"]
+    candles = add_technicals(candles)
 
-        # Color-coded action
-        if action == "BUY":
-            st.success(f"BUY Signal (confidence {confidence:.2f})")
-        elif action == "SELL":
-            st.error(f"SELL Signal (confidence {confidence:.2f})")
+    if show_raw:
+        st.subheader("Raw Candle Data")
+        st.dataframe(candles.tail(20))
+
+    if show_technicals:
+        st.subheader("Technical Indicators (Latest)")
+        latest = candles.tail(1)
+
+        cols = []
+        for c in ["macd", "macd_signal", "macd_hist", "rsi", "atr"]:
+            if c in candles.columns:
+                cols.append(c)
+
+        if cols:
+            st.write(latest[cols])
         else:
-            st.warning(f"HOLD (confidence {confidence:.2f})")
+            st.info("No technicals available for this symbol/interval.")
 
-        # Clean summaries
-        st.subheader("5m Summary")
-        st.write(clean_summary(snapshots["5m"]))
+    if show_ai and {"macd", "macd_signal", "rsi"}.issubset(candles.columns):
+        st.subheader("AI Decision")
 
-        st.subheader("15m Summary")
-        st.write(clean_summary(snapshots["15m"]))
+        latest = candles.tail(1).iloc[0]
+        macd = latest["macd"]
+        macd_signal = latest["macd_signal"]
+        rsi = latest["rsi"]
 
-        # AI rationale (clean)
-        st.subheader("AI Rationale")
-        st.write(decision["rationale"])
+        if macd > macd_signal and rsi < 70:
+            decision = "BUY"
+        elif macd < macd_signal and rsi > 30:
+            decision = "SELL"
+        else:
+            decision = "HOLD"
 
-        st.divider()
+        st.write(f"### Decision: **{decision}**")
+    elif show_ai:
+        st.info("Not enough technical data to make a decision.")
 
-else:
-    st.info("Click 'Run Analysis' to fetch fresh signals.")
+    st.markdown("---")
+    time.sleep(0.2)
